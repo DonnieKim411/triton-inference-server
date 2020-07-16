@@ -26,6 +26,8 @@
 
 #include "src/backends/backend/examples/backend_utils.h"
 
+#include <set>
+
 namespace nvidia { namespace inferenceserver { namespace backend {
 
 //
@@ -35,10 +37,18 @@ std::string
 InstanceProperties::AsString() const
 {
   std::string str("id " + std::to_string(id_) + ", ");
-  if (kind_ == Kind::CPU) {
-    str += "CPU";
-  } else {
-    str += "GPU (" + std::to_string(device_id_) + ")";
+  switch (kind_) {
+    case Kind::CPU:
+      str += "CPU";
+      break;
+    case Kind::GPU:
+      str += "GPU (" + std::to_string(device_id_) + ")";
+      break;
+    case Kind::MODEL:
+      str += "MODEL";
+      break;
+    default:
+      break;
   }
 
   return str;
@@ -84,6 +94,11 @@ ParseInstanceGroups(
           instances->emplace_back(
               idx++, InstanceProperties::Kind::GPU, device_id);
         }
+      }
+    } else if (kind_str == "KIND_MODEL") {
+      for (int32_t c = 0; c < count; ++c) {
+        instances->emplace_back(
+            idx++, InstanceProperties::Kind::MODEL, 0 /* device_id */);
       }
     } else {
       RETURN_ERROR_IF_FALSE(
@@ -175,6 +190,230 @@ ReadInputTensor(
   }
 
   *buffer_byte_size = input_byte_size;
+
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error* GetBooleanSequenceControlProperties(
+    TritonJson::Value& batcher, const std::string& model_name,
+    const std::string& control_kind, const bool required,
+    std::string* tensor_name, std::string* tensor_datatype,
+    float* fp32_false_value, float* fp32_true_value, int32_t* int32_false_value,
+    int32_t* int32_true_value)
+{
+  // Make sure same tensor is not configured for multiple controls
+  std::set<std::string> seen_tensors;
+
+  // Make sure the control kind is not mentioned multiple times.
+  bool seen_control = false;
+
+  TritonJson::Value control_inputs;
+  if (batcher.Find("control_input", &control_inputs)) {
+    for (size_t ci_idx; ci_idx < control_inputs.ArraySize(); ci_idx++) {
+      TritonJson::Value control_input;
+      RETURN_IF_ERROR(control_inputs.IndexAsObject(ci_idx, &control_input));
+      std::string input_name;
+      RETURN_IF_ERROR(control_input.MemberAsString("name", &input_name));
+      if (input_name.empty()) {
+        return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching control tensor must have a name for ") +
+                model_name).c_str());
+      }
+
+      if (seen_tensors.find(input_name) != seen_tensors.end()) {
+        return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching control tensor '") + input_name +
+                "' is specified for multiple control kinds for " + model_name).c_str());
+      }
+
+      seen_tensors.insert(input_name);
+      TritonJson::Value controls;
+      if (control_input.Find("control", &controls)) {
+        for (size_t c_idx; c_idx < controls.ArraySize(); c_idx++) {
+          TritonJson::Value c;
+          RETURN_IF_ERROR(control_input.IndexAsObject(c_idx, &c));
+          std::string kind_str;
+          RETURN_IF_ERROR(c.MemberAsString("kind", &kind_str));
+          if (kind_str == control_kind) {
+            if (seen_control) {
+              return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching specifies multiple " +
+                      control_kind +
+                      " tensors for " + model_name).c_str()));
+            }
+
+            *tensor_name = input_name;
+            seen_control = true;
+
+            TritonJson::Value int32_false_true, fp32_false_true;
+            bool found_int32 = c.Find("int32_false_true", &int32_false_true);
+            bool found_fp32 = c.Find("fp32_false_true", &fp32_false_true);
+            if (found_fp32 && found_int32) {
+              return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching specifies both 'int32_false_true' and "
+                    "'fp32_false_true' for " +
+                        control_kind +
+                        " for " + model_name)).c_str());
+            }
+            if (!(found_int32 || found_fp32)) {
+              return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching must specify either 'int32_false_true' or "
+                    "'fp32_false_true' for " +
+                        control_kind +
+                        " for " + model_name)).c_str());
+            }
+            if (found_int32) {
+              if (int32_false_true.ArraySize() != 2) {
+                return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching control 'int32_false_true' must have "
+                    "exactly 2 entries for " +
+                        control_kind +
+                        " for " + model_name)).c_str());
+              }
+              if (tensor_datatype != nullptr) {
+                *tensor_datatype = "TYPE_INT32";
+              }
+              if (int32_false_value != nullptr) {
+                int64_t value;
+                RETURN_IF_ERROR(int32_false_true.IndexAsInt(0, &value));
+                *int32_false_value = value;
+              }
+              if (int32_true_value != nullptr) {
+                int64_t value;
+                RETURN_IF_ERROR(int32_false_true.IndexAsInt(1, &value));
+                *int32_true_value = value;
+              }
+            } else {
+              if (fp32_false_true.ArraySize() != 2) {
+                return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching control 'fp32_false_true' must have exactly "
+                    "2 entries for " +
+                        control_kind +
+                        " for " + model_name)).c_str());
+              }
+
+              if (tensor_datatype != nullptr) {
+                *tensor_datatype = "TYPE_FP32";
+              }
+              if (fp32_false_value != nullptr) {
+                double value;
+                RETURN_IF_ERROR(fp32_false_true.IndexAsDouble(0, &value));
+                *fp32_false_value = value;
+              }
+              if (fp32_true_value != nullptr) {
+                double value;
+                RETURN_IF_ERROR(fp32_false_true.IndexAsDouble(1, &value));
+                *fp32_true_value = value;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (!seen_control) {
+    if (required) {
+      return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching control tensor must specify a " +
+              control_kind +
+              " value for " + model_name)).c_str());
+    }
+
+    tensor_name->clear();
+  }
+
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error* GetTypedSequenceControlProperties(
+    TritonJson::Value& batcher, const std::string& model_name,
+    const std::string& control_kind, const bool required,
+    std::string* tensor_name, std::string* tensor_datatype)
+{
+  // Make sure same tensor is not configured for multiple controls
+  std::set<std::string> seen_tensors;
+
+  // Make sure the control kind is not mentioned multiple times.
+  bool seen_control = false;
+
+  TritonJson::Value control_inputs;
+  if (batcher.Find("control_input", &control_inputs)) {
+    for (size_t ci_idx; ci_idx < control_inputs.ArraySize(); ci_idx++) {
+      TritonJson::Value control_input;
+      RETURN_IF_ERROR(control_inputs.IndexAsObject(ci_idx, &control_input));
+      std::string input_name;
+      RETURN_IF_ERROR(control_input.MemberAsString("name", &input_name));
+      if (input_name.empty()) {
+        return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching control tensor must have a name for ") +
+                model_name).c_str());
+      }
+      if (seen_tensors.find(input_name) != seen_tensors.end()) {
+        return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching control tensor '") + input_name +
+                "' is specified for multiple control kinds for " + model_name).c_str());
+      }
+      
+      seen_tensors.insert(input_name);
+      TritonJson::Value controls;
+      if (control_input.Find("control", &controls)) {
+        for (size_t c_idx; c_idx < controls.ArraySize(); c_idx++) {
+          TritonJson::Value c;
+          RETURN_IF_ERROR(control_input.IndexAsObject(c_idx, &c));
+          std::string kind_str;
+          RETURN_IF_ERROR(c.MemberAsString("kind", &kind_str));
+          if (kind_str == control_kind) {
+            if (seen_control) {
+              return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching specifies multiple " +
+                      control_kind +
+                      " tensors for " + model_name).c_str()));
+            }
+
+            *tensor_name = input_name;
+            if (tensor_datatype != nullptr) {
+              c.MemberAsString("data_type", tensor_datatype);
+            }
+
+            seen_control = true;
+
+            if (c.Find("int32_false_true") || c.Find("fp32_false_true")) {
+              return TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INVALID_ARG,
+              (std::string("sequence batching must not specify either 'int32_false_true' "
+                  "nor 'fp32_false_true' for " +
+                      control_kind +
+                      " for " + model_name)).c_str());
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (!seen_control) {
+    if (required) {
+      return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("sequence batching control tensor must specify a " +
+              control_kind +
+              " value for " + model_name)).c_str());
+    }
+
+    tensor_name->clear();
+  }
 
   return nullptr;  // success
 }

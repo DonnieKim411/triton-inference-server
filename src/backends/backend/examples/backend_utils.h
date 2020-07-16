@@ -62,6 +62,13 @@ namespace nvidia { namespace inferenceserver { namespace backend {
     }                                                 \
   } while (false)
 
+#define RETURN_ERROR_IF_TRUE(P, C, MSG)              \
+  do {                                                \
+    if ((P)) {                                       \
+      return TRITONSERVER_ErrorNew(C, (MSG).c_str()); \
+    }                                                 \
+  } while (false)
+
 #define RETURN_IF_ERROR(X)               \
   do {                                   \
     TRITONSERVER_Error* rie_err__ = (X); \
@@ -102,7 +109,7 @@ struct ResponseFactoryDeleter {
 /// Configuration information for a model instance.
 ///
 struct InstanceProperties {
-  enum class Kind { CPU, GPU };
+  enum class Kind { CPU, GPU, MODEL };
 
   InstanceProperties(const size_t i, const Kind k, const int d)
       : id_(i), kind_(k), device_id_(d)
@@ -112,8 +119,8 @@ struct InstanceProperties {
 
   size_t id_;
 
-  // For CPU device_id_ is always 0. For GPU device_id_ indicates the
-  // GPU device to be used by the instance.
+  // For CPU and MODEL, device_id_ is always 0. For GPU,
+  // device_id_ indicates the GPU device to be used by the instance.
   Kind kind_;
   int device_id_;
 };
@@ -226,5 +233,52 @@ std::string ShapeToString(const std::vector<int64_t>& shape);
 TRITONSERVER_Error* ReadInputTensor(
     TRITONBACKEND_Request* request, const std::string& input_name, char* buffer,
     size_t* buffer_byte_size);
+
+/// Get the tensor name, false value, and true value for a boolean
+/// sequence batcher control kind. If 'required' is true then must
+/// find a tensor for the control. If 'required' is false, return
+/// 'tensor_name' as empty-string if the control is not mapped to any
+/// tensor.
+///
+/// \param batcher The JSON object of the sequence batcher.
+/// \param model_name The name of the model.
+/// \param control_kind The kind of control tensor to look for.
+/// \param required Whether the tensor must be specified.
+/// \param tensor_name Returns the name of the tensor.
+/// \param tensor_datatype Returns the data type of the tensor.
+/// \param fp32_false_value Returns the float value for false if
+/// the tensor type is FP32.
+/// \param fp32_true_value Returns the float value for true if
+/// the tensor type is FP32.
+/// \param int32_false_value Returns the int value for false if
+/// the tensor type is FP32.
+/// \param int32_true_value Returns the int value for true if
+/// the tensor type is FP32.
+/// \return a TRITONSERVER_Error indicating success or failure.
+TRITONSERVER_Error* GetBooleanSequenceControlProperties(
+    TritonJson::Value& batcher, const std::string& model_name,
+    const std::string& control_kind, const bool required,
+    std::string* tensor_name, std::string* tensor_datatype,
+    float* fp32_false_value, float* fp32_true_value, int32_t* int32_false_value,
+    int32_t* int32_true_value);
+
+/// Get the tensor name and datatype for a non-boolean sequence
+/// batcher control kind. If 'required' is true then must find a
+/// tensor for the control. If 'required' is false, return
+/// 'tensor_name' as empty-string if the control is not mapped to any
+/// tensor. 'tensor_datatype' returns the required datatype for the
+/// control.
+///
+/// \param batcher The JSON object of the sequence batcher.
+/// \param model_name The name of the model.
+/// \param control_kind The kind of control tensor to look for.
+/// \param required Whether the tensor must be specified.
+/// \param tensor_name Returns the name of the tensor.
+/// \param tensor_datatype Returns the data type of the tensor.
+/// \return a TRITONSERVER_Error indicating success or failure.
+TRITONSERVER_Error* GetTypedSequenceControlProperties(
+    TritonJson::Value& batcher, const std::string& model_name,
+    const std::string& control_kind, const bool required,
+    std::string* tensor_name, std::string* tensor_datatype);
 
 }}}  // namespace nvidia::inferenceserver::backend
