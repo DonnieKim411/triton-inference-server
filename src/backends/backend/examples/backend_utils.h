@@ -234,6 +234,22 @@ TRITONSERVER_Error* ReadInputTensor(
     TRITONBACKEND_Request* request, const std::string& input_name, char* buffer,
     size_t* buffer_byte_size);
 
+/// Validate that an input matches one of the allowed input names.
+/// \param io The model input.
+/// \param allowed The set of allowed input names.
+/// \return The error status. A non-OK status indicates the input
+/// is not valid.
+TRITONSERVER_Error* CheckAllowedModelInput(
+    TritonJson::Value& io, const std::set<std::string>& allowed);
+
+/// Validate that an output matches one of the allowed output names.
+/// \param io The model output.
+/// \param allowed The set of allowed output names.
+/// \return The error status. A non-OK status indicates the output
+/// is not valid.
+TRITONSERVER_Error* CheckAllowedModelOutput(
+    TritonJson::Value& io, const std::set<std::string>& allowed);
+
 /// Get the tensor name, false value, and true value for a boolean
 /// sequence batcher control kind. If 'required' is true then must
 /// find a tensor for the control. If 'required' is false, return

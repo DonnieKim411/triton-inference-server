@@ -44,8 +44,6 @@ using cudaStream_t = void*;
 using cudaEvent_t = void*;
 #endif  // !TRITON_ENABLE_GPU
 
-class InferenceBackend;
-
 //
 // ModelInstance
 //
@@ -78,7 +76,7 @@ class ModelInstance {
   // releasing the requests.
   virtual void Run(
     TRITONBACKEND_Model* model, TRITONBACKEND_Request** requests,
-    const uint32_t request_count) = 0;
+    const uint32_t request_count, const uint64_t exec_start_ns) = 0;
 
   // Name of the model instance
   std::string name_;
@@ -100,13 +98,13 @@ class ModelInstance {
 };
 
 //
-// BackendResponder
+// ModelResponder
 //
-class BackendResponder {
+class ModelResponder {
  public:
   // The caller can optionally provide 'event' for internal synchronization
   // instead of using 'stream'.
-  explicit BackendResponder(
+  explicit ModelResponder(
       const std::vector<std::unique_ptr<InferenceRequest>>& requests,
       std::vector<std::unique_ptr<InferenceResponse>>* responses,
       const int max_batch_size, const bool pinned_enabled, cudaStream_t stream,
@@ -158,7 +156,7 @@ class BackendResponder {
   ResponsesList pending_pinned_outputs_;
 
   // Pinned memories that need to live over the lifetime of this
-  // BackendResponder object.
+  // ModelResponder object.
   std::list<std::unique_ptr<AllocatedMemory>> pinned_memories_;
 
   // Pinned memory buffers and the corresponding response outputs
@@ -180,13 +178,13 @@ class BackendResponder {
 };
 
 //
-// BackendInputCollector
+// ModelInputCollector
 //
-class BackendInputCollector {
+class ModelInputCollector {
  public:
   // The caller can optionally provide 'event' for internal synchronization
   // instead of using 'stream'.
-  explicit BackendInputCollector(
+  explicit ModelInputCollector(
       const std::vector<std::unique_ptr<InferenceRequest>>& requests,
       std::vector<std::unique_ptr<InferenceResponse>>* responses,
       const bool pinned_enabled, cudaStream_t stream,
@@ -239,7 +237,7 @@ class BackendInputCollector {
   RequestsList pending_pinned_inputs_;
 
   // Pinned memories that need to live over the lifetime of this
-  // BackendResponder object.
+  // ModelResponder object.
   std::list<std::unique_ptr<AllocatedMemory>> pinned_memories_;
 
   // Pinned memory buffers and the corresponding request_inputs where

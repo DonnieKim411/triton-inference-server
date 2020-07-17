@@ -194,6 +194,53 @@ ReadInputTensor(
   return nullptr;  // success
 }
 
+TRITONSERVER_Error*
+CheckAllowedModelInput(
+    TritonJson::Value& io, const std::set<std::string>& allowed)
+{
+  std::string io_name;
+  RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
+  if (allowed.find(io_name) == allowed.end()) {
+    std::string astr;
+    for (const auto& a : allowed) {
+      if (!astr.empty()) {
+        astr.append(", ");
+      }
+      astr.append(a);
+    }
+
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_INVALID_ARG,
+        std::string("unexpected inference input '" + io_name +
+                                       "', allowed inputs are: " + astr).c_str());
+  }
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
+CheckAllowedModelOutput(
+    TritonJson::Value& io, const std::set<std::string>& allowed)
+{
+  std::string io_name;
+  RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
+  if (allowed.find(io_name) == allowed.end()) {
+    std::string astr;
+    for (const auto& a : allowed) {
+      if (!astr.empty()) {
+        astr.append(", ");
+      }
+      astr.append(a);
+    }
+
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_INVALID_ARG,
+        std::string("unexpected inference output '" + io_name +
+                                       "', allowed outputs are: " + astr).c_str());
+  }
+
+  return nullptr;  // success
+}
+
 TRITONSERVER_Error* GetBooleanSequenceControlProperties(
     TritonJson::Value& batcher, const std::string& model_name,
     const std::string& control_kind, const bool required,
