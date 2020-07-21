@@ -26,6 +26,8 @@
 
 #include "src/backends/backend/tensorflow/model_instance.h"
 
+#include "src/backends/backend/examples/backend_utils.h"
+
 namespace nvidia { namespace inferenceserver { namespace backend {
 
 namespace {
@@ -119,11 +121,11 @@ ModelInstance::CreateCudaStream(
 }
 
 //
-// BackendResponder
+// ModelResponder
 //
 void
-BackendResponder::ProcessTensor(
-    const std::string& name, const DataType datatype,
+ModelResponder::ProcessTensor(
+    const std::string& output_name, const DataType datatype,
     std::vector<int64_t>& batchn_shape, const char* buffer,
     const TRITONSERVER_MemoryType memory_type, const int64_t memory_type_id)
 {
@@ -162,9 +164,9 @@ BackendResponder::ProcessTensor(
 
     InferenceResponse::Output* response_output = nullptr;
     if ((response != nullptr) &&
-        (request->ImmutableRequestedOutputs().find(name) !=
+        (request->ImmutableRequestedOutputs().find(output_name) !=
          request->ImmutableRequestedOutputs().end())) {
-      response->AddOutput(name, datatype, batchn_shape, &response_output);
+      response->AddOutput(output_name, datatype, batchn_shape, &response_output);
       need_sync_ |= SetFixedSizeOutputBuffer(
           &response, response_output, tensor_byte_size, tensor_offset, buffer,
           memory_type, memory_type_id, use_pinned_memory_type);
@@ -183,7 +185,7 @@ BackendResponder::ProcessTensor(
 }
 
 bool
-BackendResponder::Finalize()
+ModelResponder::Finalize()
 {
 #ifdef TRITON_ENABLE_GPU
   if ((!deferred_pinned_.empty()) && need_sync_) {
@@ -258,7 +260,7 @@ BackendResponder::Finalize()
 }
 
 bool
-BackendResponder::SetFixedSizeOutputBuffer(
+ModelResponder::SetFixedSizeOutputBuffer(
     std::unique_ptr<InferenceResponse>* response,
     InferenceResponse::Output* response_output, const size_t tensor_byte_size,
     const size_t tensor_offset, const char* tensor_buffer,
@@ -318,7 +320,7 @@ BackendResponder::SetFixedSizeOutputBuffer(
 }
 
 bool
-BackendResponder::FlushPendingPinned(
+ModelResponder::FlushPendingPinned(
     const char* tensor_buffer, const TRITONSERVER_MemoryType tensor_memory_type,
     const int64_t tensor_memory_type_id)
 {
@@ -478,12 +480,11 @@ BackendResponder::FlushPendingPinned(
 
 
 //
-// BackendInputCollector
+// ModelInputCollector
 //
 void
-BackendInputCollector::ProcessTensor(
-    const std::string& name, const DataType datatype,
-    const std::vector<int64_t>& batch1_shape, char* buffer,
+ModelInputCollector::ProcessTensor(
+    const char* input_name, char* buffer,
     const size_t buffer_byte_size, const TRITONSERVER_MemoryType memory_type,
     const int64_t memory_type_id)
 {
@@ -497,10 +498,9 @@ BackendInputCollector::ProcessTensor(
     use_pinned_memory_type = GetUsePinnedMemoryType(memory_type);
   }
 
-  const size_t batch1_byte_size = GetByteSize(datatype, batch1_shape);
   size_t buffer_offset = 0;
 
-  for (size_t idx = 0; idx < requests_.size(); idx++) {
+  for (size_t idx = 0; idx < request_count_; idx++) {
     auto& request = requests_[idx];
     auto& response = (*responses_)[idx];
 
@@ -515,21 +515,23 @@ BackendInputCollector::ProcessTensor(
           buffer, buffer_byte_size, memory_type, memory_type_id);
     }
 
-    const size_t request_byte_size =
-        batch1_byte_size * std::max(1U, request->BatchSize());
+    TRITONBACKEND_Input* input;
+    RESPOND_AND_SET_NULL_IF_ERROR(&response, 
+    TRITONBACKEND_RequestInputByName(request, input_name, &input));
+    uint64_t byte_size;
+    RESPOND_AND_SET_NULL_IF_ERROR(&response, 
+    TRITONBACKEND_InputProperties(
+      input, nullptr, nullptr, nullptr, nullptr, &byte_size, nullptr));
 
-    const InferenceRequest::Input* request_input;
-    Status status = request->ImmutableInput(name, &request_input);
-    if (!status.IsOk() && (response != nullptr)) {
-      InferenceResponse::SendWithStatus(
-          std::move(response), TRITONSERVER_RESPONSE_COMPLETE_FINAL, status);
-    } else {
+    // const InferenceRequest::Input* request_input;
+    // Status status = request->ImmutableInput(name, &request_input);
+    if (response != nullptr) {
       need_sync_ |= SetFixedSizeInputTensor(
-          request_input, buffer_offset, buffer, buffer_byte_size, memory_type,
+          input, buffer_offset, buffer, buffer_byte_size, memory_type,
           memory_type_id, use_pinned_memory_type, &response);
     }
 
-    buffer_offset += request_byte_size;
+    buffer_offset += byte_size;
   }
 
   // Done with the tensor, flush any pending pinned copies.
@@ -543,7 +545,7 @@ BackendInputCollector::ProcessTensor(
 }
 
 bool
-BackendInputCollector::Finalize()
+ModelInputCollector::Finalize()
 {
 #ifdef TRITON_ENABLE_GPU
   if ((!deferred_pinned_.empty()) && need_sync_) {
@@ -561,30 +563,31 @@ BackendInputCollector::Finalize()
   for (auto& def : deferred_pinned_) {
     auto pinned_memory_type = TRITONSERVER_MEMORY_CPU_PINNED;
     int64_t pinned_memory_id = 0;
-    char* pinned_buffer = def.pinned_memory_->MutableBuffer(
-        &pinned_memory_type, &pinned_memory_id);
+    char* pinned_buffer = def.pinned_memory_;
 
     bool cuda_used = false;
-    Status status = CopyBuffer(
+    auto err = CopyBuffer(
         "pinned buffer", pinned_memory_type, pinned_memory_id,
-        def.tensor_memory_type_, def.tensor_memory_id_,
-        def.pinned_memory_->TotalByteSize(), pinned_buffer,
-        def.tensor_buffer_ + def.tensor_buffer_offset_, stream_, &cuda_used);
+        def.tensor_memory_type_, def.tensor_memory_id_, def.pinned_memory_size_,
+        def.pinned_memory_, def.tensor_buffer_ + def.tensor_buffer_offset_, stream_,
+        &cuda_used);
     need_sync_ |= cuda_used;
 
     // If something goes wrong with the copy all the pending
     // responses fail...
-    if (!status.IsOk()) {
+    if (err == nullptr) {
       for (auto& pr : def.requests_) {
-        std::unique_ptr<InferenceResponse>* response = pr.first;
+        auto& response = pr.first;
         if (*response != nullptr) {
-          LOG_STATUS_ERROR(
-              InferenceResponse::SendWithStatus(
-                  std::move(*response), TRITONSERVER_RESPONSE_COMPLETE_FINAL,
-                  status),
-              "error setting TensorFlow input tensor");
+          LOG_IF_ERROR(
+          TRITONBACKEND_ResponseSend(
+              *response, TRITONSERVER_RESPONSE_COMPLETE_FINAL,
+              err),
+          "failed to send error response");
+          *response = nullptr;
         }
       }
+      TRITONSERVER_ErrorDelete(err);
     }
   }
 
@@ -600,47 +603,56 @@ BackendInputCollector::Finalize()
 }
 
 bool
-BackendInputCollector::SetFixedSizeInputTensor(
-    const InferenceRequest::Input* request_input,
+ModelInputCollector::SetFixedSizeInputTensor(
+    TRITONBACKEND_Input* request_input,
     const size_t tensor_buffer_offset, char* tensor_buffer,
     const size_t tensor_buffer_byte_size,
     const TRITONSERVER_MemoryType tensor_memory_type,
     const int64_t tensor_memory_type_id,
     const TRITONSERVER_MemoryType use_pinned_memory_type,
-    std::unique_ptr<InferenceResponse>* response)
+    TRITONBACKEND_Response** response)
 {
   bool cuda_copy = false;
 
-  if ((tensor_buffer_offset + request_input->Data()->TotalByteSize()) >
+  const char* name;
+  uint64_t byte_size;
+  uint32_t buffer_count;
+  RESPOND_AND_SET_NULL_IF_ERROR(response, 
+  TRITONBACKEND_InputProperties(
+    request_input, &name, nullptr, nullptr, nullptr, &byte_size,
+    &buffer_count));
+  if (*response == nullptr) {
+    return cuda_copy;
+  }
+
+  if ((tensor_buffer_offset + byte_size) >
       tensor_buffer_byte_size) {
-    InferenceResponse::SendWithStatus(
-        std::move(*response), TRITONSERVER_RESPONSE_COMPLETE_FINAL,
-        Status(
-            Status::Code::INVALID_ARG,
-            "unexpected total byte size " +
+    RESPOND_AND_SET_NULL_IF_ERROR(response, 
+    TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            std::string("unexpected total byte size " +
                 std::to_string(
                     tensor_buffer_offset +
-                    request_input->Data()->TotalByteSize()) +
-                " for input '" + request_input->Name() + "', expecting " +
-                std::to_string(tensor_buffer_byte_size)));
+                    byte_size) +
+                " for input '" + name + "', expecting " +
+                std::to_string(tensor_buffer_byte_size)).c_str()));
     return cuda_copy;
   }
 
   // Request input tensor data may be in multiple non-contiguous
   // buffers.
   size_t input_offset = 0;
-  for (size_t idx = 0; idx < request_input->DataBufferCount(); ++idx) {
+  for (size_t idx = 0; idx < buffer_count; ++idx) {
     const void* src_buffer;
     size_t src_byte_size;
     TRITONSERVER_MemoryType src_memory_type;
     int64_t src_memory_type_id;
 
-    Status status = request_input->DataBuffer(
+    RESPOND_AND_SET_NULL_IF_ERROR(response, 
+    TRITONBACKEND_InputBuffer(request_input,
         idx, &src_buffer, &src_byte_size, &src_memory_type,
-        &src_memory_type_id);
-    if (!status.IsOk()) {
-      InferenceResponse::SendWithStatus(
-          std::move(*response), TRITONSERVER_RESPONSE_COMPLETE_FINAL, status);
+        &src_memory_type_id));
+    if (*response == nullptr) {
       return cuda_copy;
     }
 
@@ -659,26 +671,21 @@ BackendInputCollector::SetFixedSizeInputTensor(
         pending_pinned_offset_ = tensor_buffer_offset;
       }
 
-      pending_pinned_byte_size_ += request_input->Data()->TotalByteSize();
+      pending_pinned_byte_size_ += byte_size;
       pending_pinned_inputs_.push_back(std::make_pair(response, request_input));
       return cuda_copy;
     }
 
     // Direct copy without intermediate pinned memory.
     bool cuda_used = false;
-    status = CopyBuffer(
-        request_input->Name(), src_memory_type, src_memory_type_id,
+    RESPOND_AND_SET_NULL_IF_ERROR(response, 
+    CopyBuffer(
+        name, src_memory_type, src_memory_type_id,
         tensor_memory_type, tensor_memory_type_id, src_byte_size, src_buffer,
         tensor_buffer + tensor_buffer_offset + input_offset, stream_,
-        &cuda_used);
+        &cuda_used));
     cuda_copy |= cuda_used;
-
-    if (!status.IsOk()) {
-      LOG_STATUS_ERROR(
-          InferenceResponse::SendWithStatus(
-              std::move(*response), TRITONSERVER_RESPONSE_COMPLETE_FINAL,
-              status),
-          "error setting TensorFlow input tensor");
+    if (*response == nullptr) {
       return cuda_copy;
     }
 
@@ -689,7 +696,7 @@ BackendInputCollector::SetFixedSizeInputTensor(
 }
 
 bool
-BackendInputCollector::FlushPendingPinned(
+ModelInputCollector::FlushPendingPinned(
     char* tensor_buffer, const size_t tensor_buffer_byte_size,
     const TRITONSERVER_MemoryType tensor_memory_type,
     const int64_t tensor_memory_type_id)
@@ -702,27 +709,37 @@ BackendInputCollector::FlushPendingPinned(
   auto pinned_memory_type = TRITONSERVER_MEMORY_CPU_PINNED;
   int64_t pinned_memory_id = 0;
 
-  std::unique_ptr<AllocatedMemory> pinned_memory(new AllocatedMemory(
-      pending_pinned_byte_size_, pinned_memory_type, pinned_memory_id));
-  char* pinned_buffer =
-      pinned_memory->MutableBuffer(&pinned_memory_type, &pinned_memory_id);
+  char* pinned_memory = nullptr;
+#ifdef TRITON_ENABLE_GPU
+  auto cuerr = cudaHostAlloc((void**)&pinned_memory, pending_pinned_byte_size_, cudaHostAllocPortable);
+  if (cuerr != cudaSuccess) {
+    pinned_memory_type = TRITONSERVER_MEMORY_CPU;
+  }
+#else
+  pinned_memory_type = TRITONSERVER_MEMORY_CPU;
+#endif  // TRITON_ENABLE_GPU
 
   // If the pinned buffer isn't actually pinned memory then just
   // perform a direct copy. In this case 'pinned_memory' is just
   // deallocated and not used.
   if (pinned_memory_type != TRITONSERVER_MEMORY_CPU_PINNED) {
-    pinned_memory.reset();
+    pinned_memory = nullptr;
 
     size_t offset = 0;
     for (auto& pr : pending_pinned_inputs_) {
-      std::unique_ptr<InferenceResponse>* response = pr.first;
-      const InferenceRequest::Input* request_input = pr.second;
+      auto& response = pr.first;
+      auto& request_input = pr.second;
+
+      uint64_t byte_size;
+      RESPOND_AND_SET_NULL_IF_ERROR(response, 
+      TRITONBACKEND_InputProperties(
+        request_input, nullptr, nullptr, nullptr, nullptr, &byte_size, nullptr));
 
       cuda_copy |= SetFixedSizeInputTensor(
           request_input, pending_pinned_offset_ + offset, tensor_buffer,
           tensor_buffer_byte_size, tensor_memory_type, tensor_memory_type_id,
           TRITONSERVER_MEMORY_CPU_PINNED, response);
-      offset += request_input->Data()->TotalByteSize();
+      offset += byte_size;
     }
   }
   // We have a pinned buffer so copy the pending input buffer(s) into
@@ -731,14 +748,19 @@ BackendInputCollector::FlushPendingPinned(
     bool cuda_used = false;
     size_t offset = 0;
     for (auto& pr : pending_pinned_inputs_) {
-      std::unique_ptr<InferenceResponse>* response = pr.first;
-      const InferenceRequest::Input* request_input = pr.second;
+      auto& response = pr.first;
+      auto& request_input = pr.second;
+
+      uint64_t byte_size;
+      RESPOND_AND_SET_NULL_IF_ERROR(response, 
+      TRITONBACKEND_InputProperties(
+        request_input, nullptr, nullptr, nullptr, nullptr, &byte_size, nullptr));
 
       cuda_used |= SetFixedSizeInputTensor(
-          request_input, offset, pinned_buffer, pending_pinned_byte_size_,
+          request_input, offset, pinned_memory, pending_pinned_byte_size_,
           pinned_memory_type, pinned_memory_id, TRITONSERVER_MEMORY_CPU_PINNED,
           response);
-      offset += request_input->Data()->TotalByteSize();
+      offset += byte_size;
     }
 
     cuda_copy |= cuda_used;
@@ -753,30 +775,33 @@ BackendInputCollector::FlushPendingPinned(
     // request inputs so that we can do the pinned->CPU copies in
     // finalize after we have waited for all async copies to complete.
     if (!cuda_used) {
-      Status status = CopyBuffer(
+      auto err = CopyBuffer(
           "pinned buffer", pinned_memory_type, pinned_memory_id,
           tensor_memory_type, tensor_memory_type_id, pending_pinned_byte_size_,
-          pinned_buffer, tensor_buffer + pending_pinned_offset_, stream_,
+          pinned_memory, tensor_buffer + pending_pinned_offset_, stream_,
           &cuda_used);
       cuda_copy |= cuda_used;
 
       // If something goes wrong with the copy all the pending
       // responses fail...
-      if (!status.IsOk()) {
+      if (err == nullptr) {
         for (auto& pr : pending_pinned_inputs_) {
-          std::unique_ptr<InferenceResponse>* response = pr.first;
+          auto& response = pr.first;
           if (*response != nullptr) {
-            LOG_STATUS_ERROR(
-                InferenceResponse::SendWithStatus(
-                    std::move(*response), TRITONSERVER_RESPONSE_COMPLETE_FINAL,
-                    status),
-                "error setting TensorFlow input tensor");
+            LOG_IF_ERROR(
+            TRITONBACKEND_ResponseSend(
+                *response, TRITONSERVER_RESPONSE_COMPLETE_FINAL,
+                err),
+            "failed to send error response");
+            *response = nullptr;
           }
         }
+        TRITONSERVER_ErrorDelete(err);
       }
     } else {  // cuda_used
       deferred_pinned_.emplace_back(
-          std::move(pinned_memory), tensor_buffer, pending_pinned_offset_,
+          std::move(pinned_memory), pending_pinned_byte_size_,
+          tensor_buffer, pending_pinned_offset_,
           tensor_memory_type, tensor_memory_type_id,
           std::move(pending_pinned_inputs_));
     }
@@ -790,10 +815,10 @@ BackendInputCollector::FlushPendingPinned(
   // Need to hold on to the allocated pinned buffer as there are still
   // copies in flight. Will delete it in finalize.
   if (pinned_memory != nullptr) {
-    pinned_memories_.push_back(std::move(pinned_memory));
+    pinned_memories_.push_back(pinned_memory);
   }
 
   return cuda_copy;
 }
 
-}}  // namespace nvidia::inferenceserver::backend
+}}}  // namespace nvidia::inferenceserver::backend

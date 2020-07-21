@@ -30,10 +30,6 @@
 
 namespace nvidia { namespace inferenceserver { namespace backend {
 
-/// The value for a dimension in a shape that indicates that that
-/// dimension can take on any size.
-constexpr int WILDCARD_DIM = -1;
-
 TRITONSERVER_Error*
 CompareDims(
     const std::string& model_name, const std::string& tensor_name,
@@ -138,51 +134,51 @@ ShapeToString(const TRTISTF_Shape* shape, const size_t start_idx)
 bool
 CompareDataType(TRTISTF_DataType model_dtype, const std::string& dtype)
 {
-  std::string cdtype = ConvertDataType(model_dtype);
-  if (cdtype == "TYPE_INVALID") {
+  auto cdtype = ConvertDataType(dtype);
+  if (cdtype == TRTISTF_TYPE_INVALID) {
     return false;
   }
 
-  return dtype == cdtype;
+  return model_dtype == cdtype;
 }
 
-std::string
+TRITONSERVER_DataType
 ConvertDataType(TRTISTF_DataType dtype)
 {
   switch (dtype) {
     case TRTISTF_DataType::TRTISTF_TYPE_INVALID:
-      return "TYPE_INVALID";
+      return TRITONSERVER_TYPE_INVALID;
     case TRTISTF_DataType::TRTISTF_TYPE_BOOL:
-      return "TYPE_BOOL";
+      return TRITONSERVER_TYPE_BOOL;
     case TRTISTF_DataType::TRTISTF_TYPE_UINT8:
-      return "TYPE_UINT8";
+      return TRITONSERVER_TYPE_UINT8;
     case TRTISTF_DataType::TRTISTF_TYPE_UINT16:
-      return "TYPE_UINT16";
+      return TRITONSERVER_TYPE_UINT16;
     case TRTISTF_DataType::TRTISTF_TYPE_UINT32:
-      return "TYPE_UINT32";
+      return TRITONSERVER_TYPE_UINT32;
     case TRTISTF_DataType::TRTISTF_TYPE_UINT64:
-      return "TYPE_UINT64";
+      return TRITONSERVER_TYPE_UINT64;
     case TRTISTF_DataType::TRTISTF_TYPE_INT8:
-      return "TYPE_INT8";
+      return TRITONSERVER_TYPE_INT8;
     case TRTISTF_DataType::TRTISTF_TYPE_INT16:
-      return "TYPE_INT16";
+      return TRITONSERVER_TYPE_INT16;
     case TRTISTF_DataType::TRTISTF_TYPE_INT32:
-      return "TYPE_INT32";
+      return TRITONSERVER_TYPE_INT32;
     case TRTISTF_DataType::TRTISTF_TYPE_INT64:
-      return "TYPE_INT64";
+      return TRITONSERVER_TYPE_INT64;
     case TRTISTF_DataType::TRTISTF_TYPE_FP16:
-      return "TYPE_FP16";
+      return TRITONSERVER_TYPE_FP16;
     case TRTISTF_DataType::TRTISTF_TYPE_FP32:
-      return "TYPE_FP32";
+      return TRITONSERVER_TYPE_FP32;
     case TRTISTF_DataType::TRTISTF_TYPE_FP64:
-      return "TYPE_FP64";
+      return TRITONSERVER_TYPE_FP64;
     case TRTISTF_DataType::TRTISTF_TYPE_STRING:
-      return "TYPE_STRING";
+      return TRITONSERVER_TYPE_BYTES;
     default:
       break;
   }
 
-  return "TYPE_INVALID";
+  return TRITONSERVER_TYPE_INVALID;
 }
 
 TRTISTF_DataType
@@ -217,6 +213,45 @@ ConvertDataType(const std::string& dtype)
   } else if (dtype == "TYPE_STRING") { return TRTISTF_DataType::TRTISTF_TYPE_STRING;
 
   }
+  return TRTISTF_DataType::TRTISTF_TYPE_INVALID;
+}
+
+TRTISTF_DataType
+ConvertDataType(TRITONSERVER_DataType dtype)
+{
+  switch (dtype) {
+    case TRITONSERVER_TYPE_INVALID:
+      return TRTISTF_DataType::TRTISTF_TYPE_INVALID;
+    case TRITONSERVER_TYPE_BOOL:
+      return TRTISTF_DataType::TRTISTF_TYPE_BOOL;
+    case TRITONSERVER_TYPE_UINT8:
+      return TRTISTF_DataType::TRTISTF_TYPE_UINT8;
+    case TRITONSERVER_TYPE_UINT16:
+      return TRTISTF_DataType::TRTISTF_TYPE_UINT16;
+    case TRITONSERVER_TYPE_UINT32:
+      return TRTISTF_DataType::TRTISTF_TYPE_UINT32;
+    case TRITONSERVER_TYPE_UINT64:
+      return TRTISTF_DataType::TRTISTF_TYPE_UINT64;
+    case TRITONSERVER_TYPE_INT8:
+      return TRTISTF_DataType::TRTISTF_TYPE_INT8;
+    case TRITONSERVER_TYPE_INT16:
+      return TRTISTF_DataType::TRTISTF_TYPE_INT16;
+    case TRITONSERVER_TYPE_INT32:
+      return TRTISTF_DataType::TRTISTF_TYPE_INT32;
+    case TRITONSERVER_TYPE_INT64:
+      return TRTISTF_DataType::TRTISTF_TYPE_INT64;
+    case TRITONSERVER_TYPE_FP16:
+      return TRTISTF_DataType::TRTISTF_TYPE_FP16;
+    case TRITONSERVER_TYPE_FP32:
+      return TRTISTF_DataType::TRTISTF_TYPE_FP32;
+    case TRITONSERVER_TYPE_FP64:
+      return TRTISTF_DataType::TRTISTF_TYPE_FP64;
+    case TRITONSERVER_TYPE_BYTES:
+      return TRTISTF_DataType::TRTISTF_TYPE_STRING;
+    default:
+      break;
+  }
+
   return TRTISTF_DataType::TRTISTF_TYPE_INVALID;
 }
 

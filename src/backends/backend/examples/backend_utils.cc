@@ -150,6 +150,72 @@ ShapeToString(const std::vector<int64_t>& shape)
   return ShapeToString(shape.data(), shape.size());
 }
 
+std::string
+DataTypeToString(TRITONSERVER_DataType dtype)
+{
+  switch (dtype) {
+    case TRITONSERVER_TYPE_INVALID:
+      return "INVALID";
+    case TRITONSERVER_TYPE_BOOL:
+      return "BOOL";
+    case TRITONSERVER_TYPE_UINT8:
+      return "UINT8";
+    case TRITONSERVER_TYPE_UINT16:
+      return "UINT16";
+    case TRITONSERVER_TYPE_UINT32:
+      return "UINT32";
+    case TRITONSERVER_TYPE_UINT64:
+      return "UINT64";
+    case TRITONSERVER_TYPE_INT8:
+      return "INT8";
+    case TRITONSERVER_TYPE_INT16:
+      return "INT16";
+    case TRITONSERVER_TYPE_INT32:
+      return "INT32";
+    case TRITONSERVER_TYPE_INT64:
+      return "INT64";
+    case TRITONSERVER_TYPE_FP16:
+      return "FP16";
+    case TRITONSERVER_TYPE_FP32:
+      return "FP32";
+    case TRITONSERVER_TYPE_FP64:
+      return "FP64";
+    case TRITONSERVER_TYPE_BYTES:
+      return "BYTES";
+    default:
+      break;
+  }
+
+  return "INVALID";
+}
+
+int64_t
+GetElementCount(const int64_t* dims, const size_t dims_count)
+{
+  bool first = true;
+  int64_t cnt = 0;
+  for (size_t i = 0; i < dims_count; i++) {
+    if (dims[i] == WILDCARD_DIM) {
+      return -1;
+    }
+
+    if (first) {
+      cnt = dims[i];
+      first = false;
+    } else {
+      cnt *= dims[i];
+    }
+  }
+
+  return cnt;
+}
+
+int64_t
+GetElementCount(const std::vector<int64_t>& shape)
+{
+  return GetElementCount(shape.data(), shape.size());
+}
+
 TRITONSERVER_Error*
 ReadInputTensor(
     TRITONBACKEND_Request* request, const std::string& input_name, char* buffer,
@@ -464,5 +530,69 @@ TRITONSERVER_Error* GetTypedSequenceControlProperties(
 
   return nullptr;  // success
 }
+
+namespace  {
+#ifdef TRITON_ENABLE_GPU
+#define RETURN_IF_CUDA_ERR(X, MSG)                                           \
+  do {                                                                       \
+    cudaError_t err__ = (X);                                                 \
+    if (err__ != cudaSuccess) {                                              \
+      return TRITONSERVER_ErrorNew(                                                         \
+          TRITONSERVER_ERROR_INTERNAL, std::string((MSG) + ": " + cudaGetErrorString(err__)).c_str()); \
+    }                                                                        \
+  } while (false)
+#endif  // TRITON_ENABLE_GPU
+}
+
+TRITONSERVER_Error*
+CopyBuffer(
+    const std::string& msg, const TRITONSERVER_MemoryType src_memory_type,
+    const int64_t src_memory_type_id,
+    const TRITONSERVER_MemoryType dst_memory_type,
+    const int64_t dst_memory_type_id, const size_t byte_size, const void* src,
+    void* dst, cudaStream_t cuda_stream, bool* cuda_used)
+{
+  *cuda_used = false;
+
+  // For CUDA memcpy, all host to host copy will be blocked in respect to the
+  // host, so use memcpy() directly. In this case, need to be careful on whether
+  // the src buffer is valid.
+  if ((src_memory_type != TRITONSERVER_MEMORY_GPU) &&
+      (dst_memory_type != TRITONSERVER_MEMORY_GPU)) {
+    memcpy(dst, src, byte_size);
+  } else {
+#ifdef TRITON_ENABLE_GPU
+    // [TODO] use cudaMemcpyDefault if UVM is supported for the device
+    auto copy_kind = cudaMemcpyDeviceToDevice;
+    if (src_memory_type != TRITONSERVER_MEMORY_GPU) {
+      copy_kind = cudaMemcpyHostToDevice;
+    } else if (dst_memory_type != TRITONSERVER_MEMORY_GPU) {
+      copy_kind = cudaMemcpyDeviceToHost;
+    }
+
+    if ((src_memory_type_id != dst_memory_type_id) &&
+        (copy_kind == cudaMemcpyDeviceToDevice)) {
+      RETURN_IF_CUDA_ERR(
+          cudaMemcpyPeerAsync(
+              dst, dst_memory_type_id, src, src_memory_type_id, byte_size,
+              cuda_stream),
+          msg + ": failed to perform CUDA copy");
+    } else {
+      RETURN_IF_CUDA_ERR(
+          cudaMemcpyAsync(dst, src, byte_size, copy_kind, cuda_stream),
+          msg + ": failed to perform CUDA copy");
+    }
+
+    *cuda_used = true;
+#else
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_INTERNAL,
+        std::string(msg + ": try to use CUDA copy while GPU is not supported").c_str());
+#endif  // TRITON_ENABLE_GPU
+  }
+
+  return nullptr;  // success
+}
+
 
 }}}  // namespace nvidia::inferenceserver::backend

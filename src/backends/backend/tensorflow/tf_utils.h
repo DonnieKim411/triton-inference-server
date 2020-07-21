@@ -59,13 +59,17 @@ std::string ShapeToString(
 /// data-type.
 bool CompareDataType(TRTISTF_DataType model_dtype, const std::string& dtype);
 
-/// \return the model configuration data-type that corresponds to a
+/// \return the TRITONSERVER data-type that corresponds to a
 /// TRTISTF data-type.
-std::string ConvertDataType(TRTISTF_DataType dtype);
+TRITONSERVER_DataType ConvertDataType(TRTISTF_DataType dtype);
 
 /// \return the TRTISTF data-type corresponding to a model
 /// configuration data-type.
 TRTISTF_DataType ConvertDataType(const std::string& dtype);
+
+/// \return the TRTISTF data-type corresponding to a model
+/// configuration data-type.
+TRTISTF_DataType ConvertDataType(TRITONSERVER_DataType dtype);
 
 // If TRTISTF Error is non-OK, return the equivalent TRTIS status.
 #define RETURN_IF_TRTISTF_ERROR(TFWS)                              \

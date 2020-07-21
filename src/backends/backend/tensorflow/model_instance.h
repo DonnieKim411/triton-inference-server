@@ -105,11 +105,13 @@ class ModelResponder {
   // The caller can optionally provide 'event' for internal synchronization
   // instead of using 'stream'.
   explicit ModelResponder(
-      const std::vector<std::unique_ptr<InferenceRequest>>& requests,
-      std::vector<std::unique_ptr<InferenceResponse>>* responses,
+      TRITONBACKEND_Request** requests,
+      const uint32_t request_count,
+      std::vector<TRITONBACKEND_Response*>* responses,
       const int max_batch_size, const bool pinned_enabled, cudaStream_t stream,
       cudaEvent_t event = nullptr)
-      : need_sync_(false), requests_(requests), responses_(responses),
+      : need_sync_(false), requests_(requests), request_count_(request_count),
+        responses_(responses),
         max_batch_size_(max_batch_size), pinned_enabled_(pinned_enabled),
         stream_(stream), event_(event), pending_pinned_byte_size_(0)
   {
@@ -117,7 +119,7 @@ class ModelResponder {
 
   // Process all responses for a named output tensor.
   void ProcessTensor(
-      const std::string& name, const DataType datatype,
+      const std::string& name, const TRITONSERVER_DataType datatype,
       std::vector<int64_t>& batchn_shape, const char* buffer,
       const TRITONSERVER_MemoryType memory_type, const int64_t memory_type_id);
 
@@ -141,8 +143,9 @@ class ModelResponder {
       const TRITONSERVER_MemoryType use_pinned_memory_type);
 
   bool need_sync_;
-  const std::vector<std::unique_ptr<InferenceRequest>>& requests_;
-  std::vector<std::unique_ptr<InferenceResponse>>* responses_;
+  TRITONBACKEND_Request** requests_;
+  const uint32_t request_count_;
+  std::vector<TRITONBACKEND_Response*>* responses_;
   const int max_batch_size_;
   const bool pinned_enabled_;
   cudaStream_t stream_;
@@ -185,20 +188,22 @@ class ModelInputCollector {
   // The caller can optionally provide 'event' for internal synchronization
   // instead of using 'stream'.
   explicit ModelInputCollector(
-      const std::vector<std::unique_ptr<InferenceRequest>>& requests,
-      std::vector<std::unique_ptr<InferenceResponse>>* responses,
+      TRITONBACKEND_Request** requests,
+      const uint32_t request_count,
+      std::vector<TRITONBACKEND_Response*>* responses,
       const bool pinned_enabled, cudaStream_t stream,
       cudaEvent_t event = nullptr)
-      : need_sync_(false), requests_(requests), responses_(responses),
-        pinned_enabled_(pinned_enabled), stream_(stream), event_(event),
-        pending_pinned_byte_size_(0)
+      : need_sync_(false), requests_(requests), request_count_(request_count),
+        responses_(responses), pinned_enabled_(pinned_enabled),
+        stream_(stream), event_(event), pending_pinned_byte_size_(0)
   {
   }
 
+  ~ModelInputCollector();
+
   // Process all requests for a named input tensor.
   void ProcessTensor(
-      const std::string& name, const DataType datatype,
-      const std::vector<int64_t>& batch1_shape, char* buffer,
+      const char* input_name, char* buffer,
       const size_t buffer_byte_size, const TRITONSERVER_MemoryType memory_type,
       const int64_t memory_type_id);
 
@@ -214,49 +219,56 @@ class ModelInputCollector {
       const TRITONSERVER_MemoryType tensor_memory_type,
       const int64_t tensor_memory_type_id);
   bool SetFixedSizeInputTensor(
-      const InferenceRequest::Input* request_input,
+      TRITONBACKEND_Input* request_input,
       const size_t tensor_buffer_offset, char* tensor_buffer,
       const size_t tensor_buffer_byte_size,
       const TRITONSERVER_MemoryType tensor_memory_type,
       const int64_t tensor_memory_type_id,
       const TRITONSERVER_MemoryType use_pinned_memory_type,
-      std::unique_ptr<InferenceResponse>* response);
+      TRITONBACKEND_Response** response);
 
   bool need_sync_;
-  const std::vector<std::unique_ptr<InferenceRequest>>& requests_;
-  std::vector<std::unique_ptr<InferenceResponse>>* responses_;
+  TRITONBACKEND_Request** requests_;
+  const uint32_t request_count_;
+  std::vector<TRITONBACKEND_Response*>* responses_;
   const bool pinned_enabled_;
   cudaStream_t stream_;
   cudaEvent_t event_;
 
   using RequestsList = std::list<std::pair<
-      std::unique_ptr<InferenceResponse>*, const InferenceRequest::Input*>>;
+      TRITONBACKEND_Response**, TRITONBACKEND_Input*>>;
 
   size_t pending_pinned_byte_size_;
   size_t pending_pinned_offset_;
   RequestsList pending_pinned_inputs_;
 
+  // FIXME provide memory utilities to avoid calls to CUDA memory functions
   // Pinned memories that need to live over the lifetime of this
-  // ModelResponder object.
-  std::list<std::unique_ptr<AllocatedMemory>> pinned_memories_;
+  // ModelInputCollector object.
+  std::list<char*> pinned_memories_;
 
   // Pinned memory buffers and the corresponding request_inputs where
   // the final copy to the tensor is deferred until Finalize() after
   // waiting for all in-flight copies.
   struct DeferredPinned {
     DeferredPinned(
-        std::unique_ptr<AllocatedMemory>&& pinned_memory, char* tensor_buffer,
+        char* pinned_memory, const size_t pinned_memory_size, char* tensor_buffer,
         const size_t tensor_buffer_offset,
         const TRITONSERVER_MemoryType tensor_memory_type,
         const int64_t tensor_memory_id, RequestsList&& requests)
-        : pinned_memory_(std::move(pinned_memory)),
+        : pinned_memory_(pinned_memory),
+          pinned_memory_size_(pinned_memory_size),
           tensor_buffer_(tensor_buffer),
           tensor_buffer_offset_(tensor_buffer_offset),
           tensor_memory_type_(tensor_memory_type),
           tensor_memory_id_(tensor_memory_id), requests_(std::move(requests))
     {
     }
-    std::unique_ptr<AllocatedMemory> pinned_memory_;
+
+    // Holding reference to the pinned memory buffer, which is managed
+    // by ModelInputCollector as 'pinned_memory'
+    char* pinned_memory_;
+    const size_t pinned_memory_size_;
     char* tensor_buffer_;
     const size_t tensor_buffer_offset_;
     const TRITONSERVER_MemoryType tensor_memory_type_;

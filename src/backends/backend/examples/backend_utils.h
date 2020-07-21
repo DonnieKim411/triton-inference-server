@@ -40,6 +40,10 @@
 #define TRITONJSON_STATUSSUCCESS nullptr
 #include "src/core/json.h"
 
+#ifdef TRITON_ENABLE_GPU
+#include <cuda_runtime_api.h>
+#endif  // TRITON_ENABLE_GPU
+
 namespace nvidia { namespace inferenceserver { namespace backend {
 
 #define LOG_IF_ERROR(X, MSG)                                                   \
@@ -77,6 +81,22 @@ namespace nvidia { namespace inferenceserver { namespace backend {
     }                                    \
   } while (false)
 
+#define RESPOND_AND_SET_NULL_IF_ERROR(RESPONSE_PTR, X)                  \
+  do {                                                                  \
+    TRITONSERVER_Error* rarie_err__ = (X);                              \
+    if (rarie_err__ != nullptr) {                                       \
+      if (*RESPONSE_PTR != nullptr) {                                \
+        LOG_IF_ERROR(                                                   \
+            TRITONBACKEND_ResponseSend(                                 \
+                *RESPONSE_PTR, TRITONSERVER_RESPONSE_COMPLETE_FINAL, \
+                rarie_err__),                                           \
+            "failed to send error response");                           \
+        *RESPONSE_PTR = nullptr;                                  \
+      }                                                                 \
+      TRITONSERVER_ErrorDelete(rarie_err__);                            \
+    }                                                                   \
+  } while (false)
+
 #ifdef TRITON_ENABLE_STATS
 #define TIMESPEC_TO_NANOS(TS) ((TS).tv_sec * 1000000000 + (TS).tv_nsec)
 #define SET_TIMESTAMP(TS_NS)             \
@@ -92,6 +112,10 @@ namespace nvidia { namespace inferenceserver { namespace backend {
 #define DECL_TIMESTAMP(TS_NS)
 #define SET_TIMESTAMP(TS_NS)
 #endif  // TRITON_ENABLE_STATS
+
+#ifndef TRITON_ENABLE_GPU
+using cudaStream_t = void*;
+#endif  // !TRITON_ENABLE_GPU
 
 /// Convenience deleter for TRITONBACKEND_ResponseFactory.
 struct ResponseFactoryDeleter {
@@ -185,6 +209,10 @@ class BlockingQueue {
   std::deque<T> queue_;
 };
 
+/// The value for a dimension in a shape that indicates that that
+/// dimension can take on any size.
+constexpr int WILDCARD_DIM = -1;
+
 /// Parse model configuration and extra the model instances that
 /// should be implemented for the specified instance groups.
 ///
@@ -218,6 +246,25 @@ std::string ShapeToString(const int64_t* dims, const size_t dims_count);
 /// \param shape The shape as a vector of dimensions.
 /// \return The string representation.
 std::string ShapeToString(const std::vector<int64_t>& shape);
+
+/// Return the string representation of a Triton server data type.
+///
+/// \param dtype The Triton server data type.
+/// \return The string representation.
+std::string DataTypeToString(TRITONSERVER_DataType dtype);
+
+/// Return the number of elements of a shape.
+///
+/// \param dims The shape dimensions.
+/// \param dims_count The number of dimensions.
+/// \return The number of elements.
+int64_t GetElementCount(const int64_t* dims, const size_t dims_count);
+
+/// Return the number of elements of a shape.
+///
+/// \param shape The shape as a vector of dimensions.
+/// \return The number of elements.
+int64_t GetElementCount(const std::vector<int64_t>& shape);
 
 /// Get an input tensor's contents into a buffer.
 ///
@@ -296,5 +343,22 @@ TRITONSERVER_Error* GetTypedSequenceControlProperties(
     TritonJson::Value& batcher, const std::string& model_name,
     const std::string& control_kind, const bool required,
     std::string* tensor_name, std::string* tensor_datatype);
+
+/// Copy buffer from 'src' to 'dst' for given 'byte_size'. The buffer location
+/// is identified by the memory type and id, and the corresponding copy will be
+/// initiated.
+/// 'msg' is the message to be prepended in error message.
+/// 'cuda_stream' specifies the stream to be associated with, and 0 can be
+/// passed for default stream.
+/// 'cuda_used' returns whether a CUDA memory copy is initiated. If true,
+/// the caller should synchronize on the given 'cuda_stream' to ensure data copy
+/// is completed.
+/// \return The error status.
+TRITONSERVER_Error* CopyBuffer(
+    const std::string& msg, const TRITONSERVER_MemoryType src_memory_type,
+    const int64_t src_memory_type_id,
+    const TRITONSERVER_MemoryType dst_memory_type,
+    const int64_t dst_memory_type_id, const size_t byte_size, const void* src,
+    void* dst, cudaStream_t cuda_stream, bool* cuda_used);
 
 }}}  // namespace nvidia::inferenceserver::backend
