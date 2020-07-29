@@ -50,7 +50,6 @@ def parse_model_http(model_metadata, model_config):
                 len(model_config['input'])))
 
     input_metadata = model_metadata['inputs'][0]
-    input_config = model_config['input'][0]
     output_metadata = model_metadata['outputs'][0]
 
     max_batch_size = 0
@@ -92,29 +91,30 @@ def parse_model_http(model_metadata, model_config):
 def requestGenerator(batched_image_data, input_name, output_name, dtype, flags):
 
     # Set the input data
-    # inputs = []
-    # inputs.append(
-    #     tritonhttpclient.InferInput(input_name, 
-    #                                 batched_image_data.shape,
-    #                                 dtype)
-    #     )
-    # inputs[0].set_data_from_numpy(batched_image_data, binary_data=False)
-
-    # # Set the output data
-    # outputs = []
-    # outputs.append(
-    #     tritonhttpclient.InferRequestedOutput(output_name, binary_data=False)
-    #     )
-    print(batched_image_data.shape)
-
-    infer_input = tritonhttpclient.InferInput(input_name, 
+    inputs = []
+    inputs.append(
+        tritonhttpclient.InferInput(input_name, 
                                     batched_image_data.shape,
                                     dtype)
-    infer_input.set_data_from_numpy(batched_image_data, binary_data=False)
-    infer_output = tritonhttpclient.InferRequestedOutput(output_name, binary_data=False)
+        )
+    inputs[0].set_data_from_numpy(batched_image_data, binary_data=False)
 
-    # yield inputs, outputs
-    yield infer_input, infer_output
+    # Set the output data
+    outputs = []
+    outputs.append(
+        tritonhttpclient.InferRequestedOutput(output_name, binary_data=False)
+        )
+
+    # print(batched_image_data.shape)
+
+    # infer_input = tritonhttpclient.InferInput(input_name, 
+    #                                 batched_image_data.shape,
+    #                                 dtype)
+    # infer_input.set_data_from_numpy(batched_image_data, binary_data=False)
+    # infer_output = tritonhttpclient.InferRequestedOutput(output_name, binary_data=False)
+
+    yield inputs, outputs
+    # yield [infer_input], [infer_output]
 
 
 class ToyClientHttp():
@@ -225,7 +225,7 @@ def run(flags):
     # Collect results from the ongoing async requests
     # for HTTP Async requests.
 
-    print(async_requests.__len__())
+    print("# of requests: {}".format(async_requests.__len__()))
 
     for async_request in async_requests:
 
