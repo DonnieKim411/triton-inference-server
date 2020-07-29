@@ -1,0 +1,18 @@
+name: "grex_model"
+platform: "tensorflow_savedmodel"
+max_batch_size: 512
+input [
+  {
+    name: "input_1"
+    data_type: TYPE_FP32
+    format: FORMAT_NHWC
+    dims: [ 150, 40, 1 ]
+  }
+]
+output [
+  {
+    name: "output_1"
+    data_type: TYPE_FP32
+    dims: [ 3 ] 
+  }
+]
