@@ -10,7 +10,9 @@ docker run --rm --shm-size=1g --ulimit memlock=-1 \
 	-p 8000:8000 -p 8001:8001 -p 8002:8002 \
 	-v $home_path/docs/examples/model_repository:/models \
 	-v $home_path/trace:/tmp\
-	$docker_img tritonserver --model-repository=/models --trace-file=/tmp/trace.json --trace-rate=1 --trace-level=MAX
+	-v /home/donnie/Documents/Repos:/mnt\
+	--name triton_server\
+	$docker_img tritonserver --strict-model-config=false --model-repository=/models --trace-file=/tmp/trace.json --trace-rate=1 --trace-level=MAX
 
 
 #docker run --rm --shm-size=1g --ulimit memlock=-1 \
