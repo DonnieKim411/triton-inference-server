@@ -213,9 +213,9 @@ def run(flags):
                                                 triton_client.output_name, 
                                                 triton_client.input_dtype, 
                                                 flags):
-            print(inputs, outputs)
+            # print(inputs, outputs)
             async_requests.append(triton_client.infer(inputs, outputs, flags, sent_count))
-            print(sent_count)
+            # print(sent_count)
             sent_count += 1
 
     except InferenceServerException as e:
@@ -225,16 +225,12 @@ def run(flags):
     # Collect results from the ongoing async requests
     # for HTTP Async requests.
 
-    print("# of requests: {}".format(async_requests.__len__()))
-
     for async_request in async_requests:
 
         result = async_request.get_result()
         responses.append(result.as_numpy(triton_client.output_name))
 
     end = datetime.datetime.now()
-
-    # print(responses, responses[0].shape)
 
     logging.info("inferance duration time: {}".format(end-start))
 
